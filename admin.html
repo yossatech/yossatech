@@ -5363,7 +5363,7 @@ function verProducto(id) {
 
 /* ================= ADMIN V9 · Nube Supabase ================= */
 /* Pega aquí la URL del proyecto y la "anon public key" (Supabase → Project Settings → API) */
-const SUPA = { url: 'https://etbmoehmjrgkzincqmis.supabase.co', key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0Ym1vZWhtanJna3ppbmNxbWlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3Nzg1MjcsImV4cCI6MjEwNjM1NDUyN30.3mw7kw6PBFMPdrVScHWaH6iLBEDj7XgRycOCt2Gz8yY' };
+const SUPA = { url: 'https://muvbocrwuumyofzeegol.supabase.co', key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im11dmJvY3J3dXVteW9memVlZ29sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2NTU0MjAsImV4cCI6MjEwNzIzMTQyMH0.K4K3gSBerILasggKGy9WUf3xCCLKRdi-L9BmULboMC8' };
 const SUPA_ON = /^https:\/\/.+\.supabase\.co$/.test(SUPA.url) && SUPA.key.length > 40;
 let SUPA_SES = null; try { SUPA_SES = JSON.parse(localStorage.getItem('ep_supa_session') || 'null'); } catch (e) { }
 async function supaAuth(body, grant) {

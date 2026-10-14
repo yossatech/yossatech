@@ -137,8 +137,11 @@ const LOGO_B64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAABBCAIAAAAb
 
 document.getElementById('logoImg').src = LOGO_B64;
 
+// ====== SUPABASE ======
+const SUPA = { url: 'https://muvbocrwuumyofzeegol.supabase.co', key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im11dmJvY3J3dXVteW9memVlZ29sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2NTU0MjAsImV4cCI6MjEwNzIzMTQyMH0.K4K3gSBerILasggKGy9WUf3xCCLKRdi-L9BmULboMC8' };
+
 // ====== STATE ======
-let v10Code = null, v10Exp = 0, v10Tries = 0, v10User = null;
+let v10Code = null, v10Exp = 0, v10Tries = 0, v10User = null, v10Mode = 'supa';
 
 // ====== TOAST ======
 function toast(msg, em) {
@@ -176,39 +179,35 @@ function validateCode() {
   sendOTP();
 }
 
-// ====== SEND OTP TO EMAIL ======
-function sendOTP() {
-  v10Code = String(Math.floor(100000 + Math.random() * 900000));
-  v10Exp = Date.now() + 10 * 60 * 1000;
-  v10Tries = 0;
+// ====== SEND OTP (Supabase Auth; si falla, respaldo por FormSubmit) ======
+function otpMsg(html) { const m = document.getElementById('otpMsg'); if (m) m.innerHTML = html; }
 
-  // Send via FormSubmit (free email relay)
-  const emailData = {
-    _subject: '🔐 Código de acceso · ' + YOSSA.biz,
-    _template: 'table',
-    _captcha: 'false',
-    'Usuario': v10User.nombre,
-    'Perfil': v10User.perfil,
-    'Código': v10Code,
-    'Vence': 'en 10 minutos',
-    'Fecha': new Date().toLocaleString('es-CO')
-  };
-
-  fetch('https://formsubmit.co/ajax/' + encodeURIComponent(YOSSA.email), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(emailData)
-  }).then(r => {
-    const m = document.getElementById('otpMsg');
-    if (!m) return;
-    if (!r.ok) m.innerHTML = '⚠️ El correo no respondió. Usa el <strong>código de respaldo</strong> de gerencia.';
-    else m.textContent = '✅ Revisa la bandeja de entrada y el spam.';
-  }).catch(() => {
-    const m = document.getElementById('otpMsg');
-    if (m) m.innerHTML = '⚠️ No se pudo enviar. Usa el <strong>código de respaldo</strong>.';
-  });
-
+async function sendOTP() {
+  v10Tries = 0; v10Code = null;
   stepVerifyOTP();
+  otpMsg('Enviando código…');
+  try {
+    const r = await fetch(SUPA.url + '/auth/v1/otp', {
+      method: 'POST',
+      headers: { apikey: SUPA.key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: YOSSA.email, create_user: false })
+    });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.msg || j.error_description || ('HTTP ' + r.status)); }
+    v10Mode = 'supa';
+    otpMsg('✅ Revisa la bandeja de entrada y el spam.');
+  } catch (e) {
+    // Respaldo: código local por FormSubmit (no crea sesión de nube)
+    v10Mode = 'local';
+    v10Code = String(Math.floor(100000 + Math.random() * 900000));
+    v10Exp = Date.now() + 10 * 60 * 1000;
+    fetch('https://formsubmit.co/ajax/' + encodeURIComponent(YOSSA.email), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ _subject: '🔐 Código de acceso · ' + YOSSA.biz, _template: 'table', _captcha: 'false',
+        'Usuario': v10User.nombre, 'Perfil': v10User.perfil, 'Código': v10Code, 'Vence': 'en 10 minutos', 'Fecha': new Date().toLocaleString('es-CO') })
+    }).then(r => otpMsg(r.ok ? '✅ Revisa la bandeja de entrada y el spam.' : '⚠️ El correo no respondió. Usa el <strong>código de respaldo</strong>.'))
+      .catch(() => otpMsg('⚠️ No se pudo enviar. Usa el <strong>código de respaldo</strong>.'));
+  }
 }
 
 // ====== STEP 2: Verify OTP ======
@@ -235,31 +234,43 @@ function stepVerifyOTP() {
 }
 
 // ====== VERIFY OTP & REDIRECT ======
-function verifyOTP() {
+async function verifyOTP() {
   const input = (document.getElementById('inputOTP')?.value || '').trim().toUpperCase();
-  const respaldo = YOSSA.codigoRespaldo.toUpperCase();
-
+  if (!input) return toast('Escribe el código', '⚠️');
   if (++v10Tries > 5) { toast('Demasiados intentos', '🚫'); return stepAccessCode(); }
 
-  const okCode = v10Code && Date.now() < v10Exp && input === v10Code;
-  const okResp = input === respaldo && v10User.perfil === 'gerencia';
+  const okResp = input === YOSSA.codigoRespaldo.toUpperCase() && v10User.perfil === 'gerencia';
+  let okCode = false;
 
-  if (!okCode && !okResp) {
-    return toast(Date.now() > v10Exp ? 'El código venció, pide uno nuevo' : 'Código incorrecto', '🚫');
+  if (!okResp && v10Mode === 'supa') {
+    try {
+      const r = await fetch(SUPA.url + '/auth/v1/verify', {
+        method: 'POST',
+        headers: { apikey: SUPA.key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'email', email: YOSSA.email, token: input })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.access_token) {
+        okCode = true;
+        // Sesión de nube lista para admin.html (mismo formato que usa el admin)
+        try {
+          localStorage.setItem('ep_supa_session', JSON.stringify({
+            at: j.access_token, rt: j.refresh_token,
+            exp: Date.now() + ((j.expires_in || 3600) - 60) * 1000,
+            email: (j.user && j.user.email) || YOSSA.email
+          }));
+        } catch (e) {}
+      }
+    } catch (e) {}
+  } else if (!okResp && v10Mode === 'local') {
+    okCode = !!v10Code && Date.now() < v10Exp && input === v10Code;
   }
 
-  // SUCCESS — redirect to admin
+  if (!okCode && !okResp) return toast('Código incorrecto o vencido', '🚫');
+
   toast('Bienvenido, ' + v10User.nombre + ' 👋', '✅');
-
-  // Save session
-  try {
-    localStorage.setItem('ef_session', JSON.stringify({ userId: v10User.id }));
-  } catch(e) {}
-
-  // Redirect to admin.html after short delay
-  setTimeout(() => {
-    window.location.href = 'admin.html';
-  }, 800);
+  try { localStorage.setItem('ef_session', JSON.stringify({ userId: v10User.id })); } catch (e) {}
+  setTimeout(() => { window.location.href = 'admin.html'; }, 800);
 }
 
 // ====== INIT ======
