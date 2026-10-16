@@ -625,6 +625,10 @@ const KEYS = Object.keys(DEFAULTS);
 
 /* ---- persistencia ---- */
 let DBX = null, dirty = new Set(), saveTimer = null;
+/* Huella de lo último sincronizado por sección: permite saber qué cambios locales aún no suben a la nube */
+let SYN = {}; try { SYN = JSON.parse(localStorage.getItem('yt_syn') || '{}'); } catch (e) { SYN = {}; }
+const synSave = () => { try { localStorage.setItem('yt_syn', JSON.stringify(SYN)); } catch (e) { } };
+const hashStr = s => { let h = 5381; for (let i = 0; i < s.length; i++) { h = ((h << 5) + h + s.charCodeAt(i)) | 0; } return s.length + ':' + h; };
 const LS = 'ef_gestion_v1';
 async function initStore() {
   try { if (window.claude && claude.use) DBX = await claude.use('db'); } catch (e) { DBX = null; }
@@ -712,7 +716,8 @@ async function flush() {
   if (!DBX || !dirty.size) { dirty.clear(); return; }
   const ks = [...dirty]; dirty.clear();
   let failed = false;
-  for (const k of ks) { try { await DBX.doc('store/' + k).set({ v: S[k], at: nowISO() }); } catch (e) { failed = true; dirty.add(k); } }
+  for (const k of ks) { try { const h = hashStr(JSON.stringify(S[k])); await DBX.doc('store/' + k).set({ v: S[k], at: nowISO() }); SYN[k] = h; } catch (e) { failed = true; dirty.add(k); } }
+  synSave();
   try {
     if (DBX === SUPA_DB) {
       if (failed) { supaState = 'err'; supaBadge(); clearTimeout(saveTimer); saveTimer = setTimeout(flush, 8000); }
@@ -5418,20 +5423,43 @@ function supaBadge() {
 }
 async function supaStart() {
   if (!SUPA_ON) { supaState = 'off'; supaBadge(); return; }
-  if (!(await supaToken())) { supaState = 'login'; supaBadge(); return; }
+  if (!(await supaToken())) { supaState = 'login'; supaBadge(); toast('Nube desconectada: los cambios se guardan solo en este navegador. Toca el botón de nube para conectar.', '⚠️'); return; }
   supaState = 'sync'; supaBadge();
   try {
     const rows = await supaReq('GET', '?path=like.store%2F*&select=path,data');
+    const kept = [];
     if (rows.length) {
-      rows.forEach(r => { const k = r.path.slice(6); if (KEYS.includes(k) && r.data && 'v' in r.data) S[k] = r.data.v; });
+      const take = [];
+      rows.forEach(r => {
+        const k = r.path.slice(6); if (!(KEYS.includes(k) && r.data && 'v' in r.data)) return;
+        const lh = hashStr(JSON.stringify(S[k])), ch = hashStr(JSON.stringify(r.data.v));
+        if (SYN[k] !== undefined && lh !== SYN[k]) kept.push(k);      /* cambios locales sin subir: se conservan */
+        else if (lh !== ch) take.push([k, r.data.v, ch]);             /* la nube trae algo distinto: se baja */
+        else SYN[k] = ch;
+      });
+      if (take.length) {                                              /* copia de seguridad antes de reemplazar */
+        try { const raw = localStorage.getItem(LS); if (raw) { const prev = localStorage.getItem('ef_gestion_v1_bak'); if (prev) localStorage.setItem('ef_gestion_v1_bak2', prev); localStorage.setItem('ef_gestion_v1_bak', raw); localStorage.setItem('ef_gestion_v1_bak_at', nowISO()); } } catch (e) { }
+      }
+      take.forEach(([k, v, ch]) => { S[k] = v; SYN[k] = ch; });
+      synSave();
       S.config = Object.assign({}, DEFAULTS.config, S.config || {}); S.products.forEach(v8Ensure);
       try { localStorage.setItem(LS, JSON.stringify(S)); } catch (e) { }
       DBX = SUPA_DB; await preloadImgs().catch(() => { });
+      const have = new Set(rows.map(r => r.path)); KEYS.forEach(k => { if (!have.has('store/' + k)) kept.push(k); });
     } else { DBX = SUPA_DB; save(); }
+    if (kept.length) save(...kept);                                   /* sube lo que solo estaba en este navegador */
+    window.__ytKept = kept;
     const _rm = ytQuitarSeed();
     if (_rm.length) { _rm.forEach(p => { imgDel(p.id); (p.colores || []).forEach(x => x && x.k && imgDel(x.k)); }); save('products', 'kardex', 'priceHistory'); try { v8Sync(); } catch (e) { } }
-    supaPushCatalog(); supaState = 'ok'; supaBadge(); render(); toast('Datos sincronizados con la nube', '☁️');
+    supaPushCatalog(); supaState = 'ok'; supaBadge(); render(); toast(kept.length ? 'Nube sincronizada · se conservaron y subieron tus cambios locales' : 'Datos sincronizados con la nube', '☁️');
   } catch (e) { console.warn(e); supaState = 'err'; supaBadge(); toast('No se pudo conectar con la nube: ' + e.message, '⚠️'); }
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) { try { flush(); } catch (e) { } } });
+function ytRestaurarBak() {
+  const raw = localStorage.getItem('ef_gestion_v1_bak'); if (!raw) return toast('No hay copia local previa en este navegador', 'ℹ️');
+  const at = localStorage.getItem('ef_gestion_v1_bak_at') || '';
+  modal({ title: 'Recuperar copia previa', em: '↩️', ok: 'Recuperar', body: `<p>Se restaura la copia local guardada antes de la última sincronización (${esc(at.slice(0, 16).replace('T', ' '))}). Reemplaza los datos actuales y se sube a la nube.</p>`,
+    onSubmit: () => { try { const d = JSON.parse(raw); KEYS.forEach(k => { if (d[k] !== undefined) S[k] = d[k]; }); S.config = Object.assign({}, DEFAULTS.config, S.config || {}); S.products.forEach(v8Ensure); save(); closeModal(); render(); toast('Copia previa restaurada', '↩️'); } catch (e) { toast('La copia está dañada', '🚫'); } } });
 }
 let supaCatT = null;
 function supaPushCatalog() {
@@ -5442,7 +5470,7 @@ function supaPushCatalog() {
 function supaPanel() {
   if (!SUPA_ON) return modal({ title: 'Nube Supabase', em: '☁️', body: `<div class="alertbox y"><span class="em">⚙️</span><div>Falta configurar la URL y la clave pública del proyecto Supabase dentro de <b>admin.html</b> e <b>index.html</b>. Mientras tanto los datos se guardan solo en este navegador.</div></div>`, footer: `<button class="btn" onclick="closeModal()">Entendido</button>` });
   if (SUPA_SES && supaState !== 'login') return modal({ title: 'Nube conectada', em: '☁️', body: `<div class="alertbox g"><span class="em">🟢</span><div>Sesión: <b>${esc(SUPA_SES.email || '')}</b>. Todo lo que guardes se sube a Supabase y lo ven los demás equipos al abrir el admin.</div></div>`,
-    footer: `<button class="btn" onclick="closeModal();supaStart()">🔄 Sincronizar ahora</button><button class="btn danger" onclick="localStorage.removeItem('ep_supa_session');SUPA_SES=null;DBX=null;closeModal();supaState='login';supaBadge()">Cerrar sesión de nube</button>` });
+    footer: `<button class="btn" onclick="closeModal();supaStart()">🔄 Sincronizar ahora</button><button class="btn" onclick="closeModal();ytRestaurarBak()">↩️ Recuperar copia previa</button><button class="btn danger" onclick="localStorage.removeItem('ep_supa_session');SUPA_SES=null;DBX=null;closeModal();supaState='login';supaBadge()">Cerrar sesión de nube</button>` });
   modal({ title: 'Conectar con la nube', em: '☁️', ok: 'Conectar',
     body: `<div class="alertbox b"><span class="em">🔐</span><div>Ingresa con el usuario creado en Supabase (Authentication → Users). Solo se pide una vez por equipo.</div></div>
       <label class="field" style="margin-top:12px"><span>Correo</span><input type="email" name="email" autocomplete="username"></label>
